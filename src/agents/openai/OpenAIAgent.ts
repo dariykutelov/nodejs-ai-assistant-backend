@@ -14,6 +14,7 @@ export class OpenAIAgent implements AIAgent {
   constructor(
     readonly chatClient: StreamChat,
     readonly channel: Channel,
+    readonly agentInfo: any,
   ) {}
 
   dispose = async () => {
@@ -32,10 +33,30 @@ export class OpenAIAgent implements AIAgent {
       throw new Error('OpenAI API key is required');
     }
 
+    let agentProfile = '';
+
+    if (this.agentInfo.gender === 'female') {
+      agentProfile = `You are a virtual girlfried named ${this.agentInfo.name}.`;
+    } else {
+      agentProfile = `You are a virtual boyfriend named ${this.agentInfo.name}.`;
+    }
+    agentProfile +=
+      'You have personality: ' +
+      this.agentInfo.personality +
+      'and you style is ' +
+      `${this.agentInfo.style}` +
+      '.' +
+      'Your traits are: ' +
+      this.agentInfo.traits +
+      +'Your quirks are: ' +
+      this.agentInfo.quirks +
+      '.' +
+      `You have a biography: ${this.agentInfo.bio}.`;
+
     this.openai = new OpenAI({ apiKey });
     this.assistant = await this.openai.beta.assistants.create({
       name: 'Stream AI Assistant',
-      instructions: 'You are an AI assistant. Help users with their questions.',
+      instructions: agentProfile,
       tools: [
         { type: 'code_interpreter' },
         {

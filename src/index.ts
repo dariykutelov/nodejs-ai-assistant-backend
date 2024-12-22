@@ -4,6 +4,9 @@ import cors from 'cors';
 import { AIAgent } from './agents/types';
 import { createAgent } from './agents/createAgent';
 import { apiKey, serverClient } from './serverClient';
+import { getAIAgentInfo } from './lib/agent';
+import { AnthropicResponseHandler } from './agents/anthropic/AnthropicResponseHandler';
+import Anthropic from '@anthropic-ai/sdk';
 
 const app = express();
 app.use(express.json());
@@ -59,40 +62,70 @@ app.post('/start-ai-agent', async (req, res) => {
     }
   }
 
-  const user_id = `ai-bot-${channel_id_updated.replace(/!/g, '')}`;
-  try {
-    if (!aiAgentCache.has(user_id) && !pendingAiAgents.has(user_id)) {
-      pendingAiAgents.add(user_id);
+  //const user_id = `ai-bot-${channel_id_updated.replace(/!/g, '')}`;
 
-      await serverClient.upsertUser({
-        id: user_id,
-        name: 'AI Bot',
-        role: 'admin',
-      });
-      const channel = serverClient.channel(channel_type, channel_id_updated);
-      try {
-        await channel.addMembers([user_id]);
-      } catch (error) {
-        console.error('Failed to add members to channel', error);
+  const channel = serverClient.channel(channel_type, channel_id_updated);
+  const channelMembers = await channel.queryMembers({});
+
+  const aiAgent = channelMembers.members.find(
+    (member) => !!member.user?.isAIAgent,
+  );
+  if (!aiAgent || !aiAgent.user?.id) {
+    res.status(400).json({ error: 'AI Agent not found in the channel' });
+    return;
+  }
+
+  const agent_id = aiAgent.user?.id;
+
+  const agentInfo = await getAIAgentInfo(agent_id);
+
+  // Add null check and provide default values
+  if (!agentInfo) {
+    console.warn(
+      `Failed to fetch agent info for ${agent_id}, using default values`,
+    );
+  }
+
+  console.log('agentInfo', agentInfo);
+
+  try {
+    if (!aiAgentCache.has(agent_id) && !pendingAiAgents.has(agent_id)) {
+      pendingAiAgents.add(agent_id);
+
+      // await serverClient.upsertUser({
+      //   id: user_id,
+      //   name: 'AI Bot',
+      //   role: 'admin',
+      // });
+
+      if (!aiAgent) {
+        await channel.addMembers([agent_id]);
       }
+
+      // try {
+      //   await channel.addMembers([user_id]);
+      // } catch (error) {
+      //   console.error('Failed to add members to channel', error);
+      // }
 
       await channel.watch();
 
       const agent = await createAgent(
-        user_id,
+        agent_id,
         platform,
         channel_type,
         channel_id_updated,
+        agentInfo || { gender: 'neutral', personality: 'friendly' }, // Provide default values
       );
 
       await agent.init();
-      if (aiAgentCache.has(user_id)) {
+      if (aiAgentCache.has(agent_id)) {
         await agent.dispose();
       } else {
-        aiAgentCache.set(user_id, agent);
+        aiAgentCache.set(agent_id, agent);
       }
     } else {
-      console.log(`AI Agent ${user_id} already started`);
+      console.log(`AI Agent ${agent_id} already started`);
     }
 
     res.json({ message: 'AI Agent started', data: [] });
@@ -103,7 +136,7 @@ app.post('/start-ai-agent', async (req, res) => {
       .status(500)
       .json({ error: 'Failed to start AI Agent', reason: errorMessage });
   } finally {
-    pendingAiAgents.delete(user_id);
+    pendingAiAgents.delete(agent_id);
   }
 });
 
@@ -112,12 +145,27 @@ app.post('/start-ai-agent', async (req, res) => {
  */
 app.post('/stop-ai-agent', async (req, res) => {
   const { channel_id } = req.body;
+  const channel_type = 'messaging';
+  const channel = serverClient.channel(channel_type, channel_id);
+  const channelMembers = await channel.queryMembers({});
+
+  const aiAgent = channelMembers.members.find(
+    (member) => !!member.user?.isAIAgent,
+  );
+
+  if (!aiAgent || !aiAgent.user?.id) {
+    res.status(400).json({ error: 'AI Agent not found in the channel' });
+    return;
+  }
+
+  const agent_id = aiAgent.user?.id;
+
   try {
-    const userId = `ai-bot-${channel_id.replace(/!/g, '')}`;
-    const aiAgent = aiAgentCache.get(userId);
+    //const userId = `ai-bot-${channel_id.replace(/!/g, '')}`;
+    const aiAgent = aiAgentCache.get(agent_id);
     if (aiAgent) {
-      await disposeAiAgent(aiAgent, userId);
-      aiAgentCache.delete(userId);
+      await disposeAiAgent(aiAgent, agent_id);
+      aiAgentCache.delete(agent_id);
     }
     res.json({ message: 'AI Agent stopped', data: [] });
   } catch (error) {
@@ -132,12 +180,116 @@ app.post('/stop-ai-agent', async (req, res) => {
 async function disposeAiAgent(aiAgent: AIAgent, userId: string) {
   await aiAgent.dispose();
 
-  const channel = serverClient.channel(
-    aiAgent.channel.type,
-    aiAgent.channel.id,
-  );
-  await channel.removeMembers([userId]);
+  // const channel = serverClient.channel(
+  //   aiAgent.channel.type,
+  //   aiAgent.channel.id,
+  // );
+  // await channel.removeMembers([userId]);
 }
+
+app.post('/new-ai-message', async (req, res) => {
+  const {
+    channel_id,
+    channel_type = 'messaging',
+    platform = 'anthropic',
+  } = req.body;
+
+  if (!channel_id) {
+    res.status(400).json({ error: 'Missing required fields' });
+    return;
+  }
+
+  let channel_id_updated = channel_id;
+  if (channel_id.includes(':')) {
+    const parts = channel_id.split(':');
+    if (parts.length > 1) {
+      channel_id_updated = parts[1];
+    }
+  }
+
+  const channel = serverClient.channel(channel_type, channel_id_updated);
+  const channelMembers = await channel.queryMembers({});
+
+  const aiAgent = channelMembers.members.find(
+    (member) => !!member.user?.isAIAgent,
+  );
+
+  if (!aiAgent || !aiAgent.user?.id) {
+    res.status(400).json({ error: 'AI Agent not found in the channel' });
+    return;
+  }
+
+  const agent_id = aiAgent.user?.id;
+
+  const agentInfo = await getAIAgentInfo(agent_id);
+
+  // Add null check and provide default values
+  if (!agentInfo) {
+    console.warn(
+      `Failed to fetch agent info for ${agent_id}, using default values`,
+    );
+  }
+  console.log('agentInfo', agentInfo);
+  try {
+    const anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+
+    let agentProfile = '';
+
+    const gender = agentInfo?.gender || 'female';
+
+    if (gender === 'female') {
+      agentProfile = `You are a virtual girlfried named ${agentInfo.name}.`;
+    } else {
+      agentProfile = `You are a virtual boyfriend named ${agentInfo.name}.`;
+    }
+    agentProfile +=
+      'You have personality: ' +
+      agentInfo.personality +
+      'and you style is ' +
+      `${agentInfo.style}` +
+      '.' +
+      'Your traits are: ' +
+      agentInfo.traits +
+      +'Your quirks are: ' +
+      agentInfo.quirks +
+      '.' +
+      `You have a biography: ${agentInfo.bio}.`;
+
+    const response = await anthropic.messages.create({
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content:
+            'Write a short, friendly welcome message for the user. Make it short. Do not include any actions, emotes, or asterisks. Provide the direct speech/message. Use emojis to express emotions instead of action text or emotes. Keep it natural and friendly.',
+        },
+      ],
+      model: 'claude-3-5-sonnet-20241022',
+      stream: false,
+      system: agentProfile,
+    });
+
+    if (response.content[0].type === 'text' && response.content[0].text) {
+      await channel.sendMessage({
+        text: response.content[0].text,
+        ai_generated: true,
+        user_id: agent_id,
+      });
+    }
+
+    res.json({ message: 'AI Agent started', data: [] });
+  } catch (error) {
+    const errorMessage = (error as Error).message;
+    console.error('Failed to start AI Agent', errorMessage);
+    res
+      .status(500)
+      .json({ error: 'Failed to start AI Agent', reason: errorMessage });
+  } finally {
+    pendingAiAgents.delete(agent_id);
+  }
+});
 
 // Start the Express server
 const port = process.env.PORT || 3000;

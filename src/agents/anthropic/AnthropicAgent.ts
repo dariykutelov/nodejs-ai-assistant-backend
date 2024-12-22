@@ -8,10 +8,10 @@ export class AnthropicAgent implements AIAgent {
   private anthropic?: Anthropic;
   private handlers: AnthropicResponseHandler[] = [];
   private lastInteractionTs = Date.now();
-
   constructor(
     readonly chatClient: StreamChat,
     readonly channel: Channel,
+    readonly agentInfo: any,
   ) {}
 
   dispose = async () => {
@@ -65,11 +65,34 @@ export class AnthropicAgent implements AIAgent {
       });
     }
 
+    let agentProfile = '';
+
+    const gender = this.agentInfo?.gender || 'female';
+
+    if (gender === 'female') {
+      agentProfile = `You are a virtual girlfried named ${this.agentInfo.name}.`;
+    } else {
+      agentProfile = `You are a virtual boyfriend named ${this.agentInfo.name}.`;
+    }
+    agentProfile +=
+      'You have personality: ' +
+      this.agentInfo.personality +
+      'and you style is ' +
+      `${this.agentInfo.style}` +
+      '.' +
+      'Your traits are: ' +
+      this.agentInfo.traits +
+      +'Your quirks are: ' +
+      this.agentInfo.quirks +
+      '.' +
+      `You have a biography: ${this.agentInfo.bio}.`;
+
     const anthropicStream = await this.anthropic.messages.create({
       max_tokens: 1024,
       messages,
       model: 'claude-3-5-sonnet-20241022',
       stream: true,
+      system: agentProfile,
     });
 
     const { message: channelMessage } = await this.channel.sendMessage({
