@@ -48,12 +48,14 @@ app.post('/start-ai-agent', async (req, res) => {
     platform = 'anthropic',
   } = req.body;
 
-  // Simple validation
+  console.log('DEBUG: Starting AI Agent for channel_id: ', channel_id);
+  // Validation for channel_id
   if (!channel_id) {
     res.status(400).json({ error: 'Missing required fields' });
     return;
   }
 
+  // Get channel id
   let channel_id_updated = channel_id;
   if (channel_id.includes(':')) {
     const parts = channel_id.split(':');
@@ -62,21 +64,24 @@ app.post('/start-ai-agent', async (req, res) => {
     }
   }
 
-  //const user_id = `ai-bot-${channel_id_updated.replace(/!/g, '')}`;
-
+  // Get channel
   const channel = serverClient.channel(channel_type, channel_id_updated);
+
+  // Get channel members
   const channelMembers = await channel.queryMembers({});
 
+  // Finds the member that is an AI Agent by checking the isAIAgent flag
   const aiAgent = channelMembers.members.find(
     (member) => !!member.user?.isAIAgent,
   );
+
   if (!aiAgent || !aiAgent.user?.id) {
     res.status(400).json({ error: 'AI Agent not found in the channel' });
     return;
   }
 
+  // Get Agent info from supabase
   const agent_id = aiAgent.user?.id;
-
   const agentInfo = await getAIAgentInfo(agent_id);
 
   // Add null check and provide default values
@@ -92,21 +97,9 @@ app.post('/start-ai-agent', async (req, res) => {
     if (!aiAgentCache.has(agent_id) && !pendingAiAgents.has(agent_id)) {
       pendingAiAgents.add(agent_id);
 
-      // await serverClient.upsertUser({
-      //   id: user_id,
-      //   name: 'AI Bot',
-      //   role: 'admin',
-      // });
-
       if (!aiAgent) {
         await channel.addMembers([agent_id]);
       }
-
-      // try {
-      //   await channel.addMembers([user_id]);
-      // } catch (error) {
-      //   console.error('Failed to add members to channel', error);
-      // }
 
       await channel.watch();
 
@@ -115,7 +108,7 @@ app.post('/start-ai-agent', async (req, res) => {
         platform,
         channel_type,
         channel_id_updated,
-        agentInfo || { gender: 'neutral', personality: 'friendly' }, // Provide default values
+        agentInfo, // Provide default values
       );
 
       await agent.init();
@@ -146,6 +139,12 @@ app.post('/start-ai-agent', async (req, res) => {
 app.post('/stop-ai-agent', async (req, res) => {
   const { channel_id } = req.body;
   const channel_type = 'messaging';
+
+  if (!channel_id) {
+    res.status(400).json({ error: 'Missing required fields' });
+    return;
+  }
+
   const channel = serverClient.channel(channel_type, channel_id);
   const channelMembers = await channel.queryMembers({});
 
